@@ -170,6 +170,12 @@ def generate(inputs, params, n_head, n_tokens_to_generate):
 
     return inputs[len(inputs) - n_tokens_to_generate :]  # only return generated ids
 
+def greedy_speculative_generate():
+    """
+        Task: Load 124M and 1558M models at the same time, use greedy sampling, and complete speculative decoding
+    """
+    pass  
+
 
 def main(prompt: str, n_tokens_to_generate: int = 5, model_size: str = "124M", models_dir: str = "models"):
     from utils import load_encoder_hparams_and_params

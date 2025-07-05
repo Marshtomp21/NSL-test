@@ -35,7 +35,7 @@ Which generates
 The computer is a machine that can perform complex calculations, and it can perform these calculations in a way that is very similar to the human brain.
 ```
 
-We only used the **124M** model in this test. You can also control the number of tokens to generate, the model size (one of `["124M", "355M", "774M", "1558M"]`), and the directory to save the models:
+We used **124M** model in this test. You can also control the number of tokens to generate, the model size (one of `["124M", "355M", "774M", "1558M"]`), and the directory to save the models:
 
 ```bash
 python NSL-gpt2.py \
@@ -43,4 +43,13 @@ python NSL-gpt2.py \
     --n_tokens_to_generate 40 \
     --model_size "124M" \
     --models_dir "models"
+```
+
+When you write the greedy_speculative_decoding function, you need to load both the **124M and 1558M** models at the same time, and be careful to modify the parameters when loading the models.
+
+When we use the **1558M** model for autoregressive inference, the returned results are as follows: (When using greedy sampling, this result is unique)
+```
+ so powerful that they would be able to think like humans.
+
+In the 1950s, he proposed a way to build a computer that could think like a human. He called it the "T
 ```
