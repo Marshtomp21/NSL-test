@@ -170,11 +170,29 @@ def generate(inputs, params, n_head, n_tokens_to_generate):
 
     return inputs[len(inputs) - n_tokens_to_generate :]  # only return generated ids
 
-def greedy_speculative_generate():
+def greedy_speculative_generate(inputs, draft_params, target_params, hparams_draft, hparams_target, n_tokens_to_generate, K):
+    
     """
         Task: Load 124M and 1558M models at the same time, use greedy sampling, and complete speculative decoding
+    
+        Inputs:
+            inputs (list): The initial list of token IDs from the prompt.
+            draft_params, target_params: Model weights for the draft and target models.
+            hparams_draft, hparams_target: Hyperparameters for both models.
+            n_tokens_to_generate (int): The number of new tokens to generate.
+            K (int): The number of tokens the draft model speculates at each step (e.g., 4).
+
+        Returns:
+            list: A list of newly generated token IDs.
+            
     """
-    pass  
+    generated_ids = []
+    current_inputs = list(inputs)
+
+    while len(generated_ids) < n_tokens_to_generate:
+        pass
+
+    return generated_ids
 
 
 def main(prompt: str, n_tokens_to_generate: int = 5, model_size: str = "124M", models_dir: str = "models"):
