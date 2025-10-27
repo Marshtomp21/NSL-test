@@ -3,7 +3,9 @@ import torch
 import time
 import torch.nn as nn
 import math
+
 torch.set_printoptions(8)
+
 
 def gelu(x):
     """
@@ -28,7 +30,7 @@ def softmax(x):
     return nn.functional.softmax(x, dim=-1)
 
 
-def layer_norm(x, g_b, eps:float = 1e-5):
+def layer_norm(x, g_b, eps: float = 1e-5):
     """
         Task: Use torch API to implement `layernorm` function, search `layernorm` by yourself
         Input:
@@ -44,6 +46,7 @@ def layer_norm(x, g_b, eps:float = 1e-5):
     x_norm = (x - mean) / torch.sqrt(var + eps)
 
     return x_norm * g + b
+
 
 def linear(x, w_b):  # [m, in], [in, out], [out] -> [m, out]
     """
@@ -71,7 +74,7 @@ def ffn(x, mlp):  # [n_seq, n_embd] -> [n_seq, n_embd]
     return linear(gelu(linear(x, w_b1)), w_b2)
 
 
-def attention(q, k, v, mask, kv_cache=None):  # [n_q, d_k], [n_k, d_k], [n_k, d_v], [n_q, n_k] -> [n_q, d_v]
+def attention(q, k, v, mask):  # [n_q, d_k], [n_k, d_k], [n_k, d_v], [n_q, n_k] -> [n_q, d_v]
     """
         Task: use torch API to implement attention computation according to formula(1) of the following paper
               where d_k account for the last dimension of `k`
@@ -84,22 +87,22 @@ def attention(q, k, v, mask, kv_cache=None):  # [n_q, d_k], [n_k, d_k], [n_k, d_
             mlp: dictionary that load from gpt2 weight. w_b1 and w_b2 are the params of two linear layer
         Output: Tensor
     """
-    if kv_cache is not None:
-        k_cache, v_cache = kv_cache['k'], kv_cache['v']
-        k = torch.cat([k_cache, k], dim=0)
-        v = torch.cat([v_cache, v], dim=0)
-        kv_cache['k'], kv_cache['v'] = k, v
-
     d_k = q.size(-1)
-    scores = (q @ k.transpose(-2, -1)) / math.sqrt(d_k)
+    scores = (q @ k.T) / math.sqrt(d_k)
 
-    scores = torch.where(mask == 0, -torch.inf, scores)
+    if mask is not None:
+        mask = mask.to(device=scores.device)
+        if mask.dtype == torch.bool:
+            scores = scores.masked_fill(~mask, float('-inf'))
+        else:
+            scores = scores + mask.to(device=scores.device)
 
-    probs = softmax(scores)
+    probs = nn.functional.softmax(scores, dim=-1)
 
     return probs @ v
 
-def mha(x, attn, n_head, kv_cache=None):  # [n_seq, n_embd] -> [n_seq, n_embd]
+
+def mha(x, attn, n_head):  # [n_seq, n_embd] -> [n_seq, n_embd]
     """
         Task: Complete the code of the multi-head attention
 
@@ -118,7 +121,7 @@ def mha(x, attn, n_head, kv_cache=None):  # [n_seq, n_embd] -> [n_seq, n_embd]
         Task: Split the q,k,v matrix from the tensor x
         Notes: [n_seq, 3*n_embd] -> 3 * [n_seq, n_embd]
     """
-    qkv = x.chunk(3, dim=-1) # need to modify
+    qkv = x.chunk(3, dim=-1)  # need to modify
 
     # Split into heads
     qkv_heads = [qkv_part.chunk(n_head, dim=-1) for qkv_part in qkv]  # 3 * [n_seq, n_embd] -> 3 * n_head * [n_seq, n_embd/n_head]
@@ -135,24 +138,18 @@ def mha(x, attn, n_head, kv_cache=None):  # [n_seq, n_embd] -> [n_seq, n_embd]
             | 0    0    0  ...   0  |
         Mask is a tensor whose dimension is [n_seq, n_seq]
     """
-    n_seq_q = x.size(0)
-    n_seq_kv_past = kv_cache[0]['k'].shape[0] if kv_cache is not None else 0
-    n_seq_kv = n_seq_q + n_seq_kv_past
+    seq_len = x.size(0)
+    causal_mask = torch.tril(torch.ones(seq_len, seq_len, dtype=torch.bool, device=x.device))
 
-    if n_seq_q > 1:
-        mask_01 = torch.tril(torch.ones(n_seq_q, n_seq_kv))
-    else:
-        mask_01 = torch.ones(1, n_seq_kv)
+    # Perform attention over each head
+    out_heads = [attention(q, k, v, causal_mask) for q, k, v in qkv_heads]  # n_head * [n_seq, n_embd/n_head]
 
-    additive_mask = (1.0 - mask_01) * -torch.inf
-
-    out_heads = [attention(q, k, v, additive_mask, kv_cache=kv_cache[i] if kv_cache is not None else None) for i, (q, k, v) in enumerate(qkv_heads)]  # n_head * [n_seq, n_embd/n_head]
     # Merge heads
     """
         Task: merge multi-heads results
         Notes: n_head * [n_seq, n_embd/n_head] --> [n_seq, n_embd]
     """
-    x = torch.cat(out_heads, dim=-1) # need to modify
+    x = torch.cat(out_heads, dim=-1)  # need to modify
 
     # Out projection
     x = linear(x, c_proj)  # [n_seq, n_embd] -> [n_seq, n_embd]
@@ -160,11 +157,11 @@ def mha(x, attn, n_head, kv_cache=None):  # [n_seq, n_embd] -> [n_seq, n_embd]
     return x
 
 
-def transformer_block(x, block, n_head, kv_cache=None):  # [n_seq, n_embd] -> [n_seq, n_embd]
+def transformer_block(x, block, n_head):  # [n_seq, n_embd] -> [n_seq, n_embd]
     mlp, attn, ln_1, ln_2 = block['mlp'], block['attn'], block['ln_1'], block['ln_2']
 
     # multi-head causal self attention
-    x = x + mha(layer_norm(x, ln_1), attn, n_head=n_head, kv_cache=kv_cache)  # [n_seq, n_embd] -> [n_seq, n_embd]
+    x = x + mha(layer_norm(x, ln_1), attn, n_head=n_head)  # [n_seq, n_embd] -> [n_seq, n_embd]
 
     # position-wise feed forward network
     x = x + ffn(layer_norm(x, ln_2), mlp)  # [n_seq, n_embd] -> [n_seq, n_embd]
@@ -172,51 +169,34 @@ def transformer_block(x, block, n_head, kv_cache=None):  # [n_seq, n_embd] -> [n
     return x
 
 
-def gpt2(inputs, params, n_head, kv_cache=None):  # [n_seq] -> [n_seq, n_vocab]
+def gpt2(inputs, params, n_head):  # [n_seq] -> [n_seq, n_vocab]
     wte, wpe, blocks, ln_f = params['wte'], params['wpe'], params['blocks'], params['ln_f']
     # token + positional embeddings
-
-    n_seq_past = kv_cache[0][0]['k'].shape[0] if kv_cache is not None else 0
-    positions = range(n_seq_past, n_seq_past + len(inputs))
-    x = wte[inputs] + wpe[positions]
+    x = wte[inputs] + wpe[range(len(inputs))]  # [n_seq] -> [n_seq, n_embd]
 
     x = torch.Tensor(x)
     # forward pass through n_layer transformer blocks
-    for i, block in enumerate(blocks):
-        cache = kv_cache[i] if kv_cache else None
-        x = transformer_block(x, block, n_head=n_head, kv_cache=cache)  # [n_seq, n_embd] -> [n_seq, n_embd]
+    for block in blocks:
+        x = transformer_block(x, block, n_head=n_head)  # [n_seq, n_embd] -> [n_seq, n_embd]
 
     # projection to vocab
     x = layer_norm(x, ln_f)  # [n_seq, n_embd] -> [n_seq, n_embd]
     return x @ wte.T  # [n_seq, n_embd] -> [n_seq, n_vocab]
 
 
-def generate(inputs, params, hparams, n_tokens_to_generate):
+def generate(inputs, params, n_head, n_tokens_to_generate):
     from tqdm import tqdm
 
-    n_layer = hparams['n_layer']
-    n_head = hparams['n_head']
-    n_embd = hparams['n_embd']
+    for _ in tqdm(range(n_tokens_to_generate), "generating"):  # auto-regressive decode loop
+        logits = gpt2(inputs, params, n_head=n_head)  # model forward pass
+        next_id = np.argmax(logits[-1])  # greedy sampling
+        inputs.append(int(next_id))  # append prediction to input
 
-    kv_cache = [[{'k': torch.empty(0, n_embd // n_head), 'v': torch.empty(0, n_embd // n_head)} for _ in range(n_head)] for _ in range(n_layer)]
+    return inputs[len(inputs) - n_tokens_to_generate:]  # only return generated ids
 
-    next_token = inputs[0]
-    prompt_id = inputs[1:]
 
-    for token_id in prompt_id:
-        gpt2([next_token], params, n_head, kv_cache=kv_cache)
-        next_token = token_id
-
-    generated_ids = []
-    for _ in tqdm(range(n_tokens_to_generate), "generating"):
-        logits = gpt2([next_token], params, n_head, kv_cache)
-        next_token = np.argmax(logits[-1])
-        generated_ids.append(int(next_token))
-
-    return generated_ids
-
-def greedy_speculative_generate(inputs, draft_params, target_params, hparams_draft, hparams_target, n_tokens_to_generate, K):
-
+def greedy_speculative_generate(inputs, draft_params, target_params, hparams_draft, hparams_target,
+                                n_tokens_to_generate, K):
     """
         Task: Load 124M and 1558M models at the same time, use greedy sampling, and complete speculative decoding
 
@@ -231,28 +211,77 @@ def greedy_speculative_generate(inputs, draft_params, target_params, hparams_dra
             list: A list of newly generated token IDs.
 
     """
-    generated_ids = []
-    current_inputs = list(inputs)
+    from tqdm import tqdm
 
-    while len(generated_ids) < n_tokens_to_generate:
-        return generated_ids
+    #初始化
+    confirmed_ids = list(inputs)
+
+    #主循环，直到生成足够token
+    while len(confirmed_ids) - len(inputs) < n_tokens_to_generate:
+        #Drafting Phase
+        draft_inputs = list(confirmed_ids)
+        draft_generated_ids = []
+        for _ in range(K):
+            logits_draft = gpt2(draft_inputs, draft_params, hparams_draft["n_head"])
+            next_id_draft = np.argmax(logits_draft[-1])
+            draft_inputs.append(int(next_id_draft))
+            draft_generated_ids.append(int(next_id_draft))
+
+        #Vertification Phase
+        ver_inputs = confirmed_ids + draft_generated_ids
+        logits_target = gpt2(ver_inputs, target_params, hparams_target["n_head"])
+
+        target_pred = np.argmax(logits_target[len(confirmed_ids) - 1:-1], axis=-1)
+
+        #Acceptance/Rejection
+        acceptance = False
+        for i in range(K):
+            draft_token = draft_generated_ids[i]
+            target_token = target_pred[i]
+            if draft_token == target_token:
+                confirmed_ids.append(int(draft_token))
+            else:
+                confirmed_ids.append(int(target_token))
+                acceptance = False
+                break
+
+        if acceptance:
+            last_token = np.argmax(logits_target[-1])
+            confirmed_ids.append(int(last_token))
+
+        if len(confirmed_ids) == n_tokens_to_generate:
+            break
+
+    return confirmed_ids[len(inputs):]
 
 
-def main(prompt: str, n_tokens_to_generate: int = 5, model_size: str = "124M", models_dir: str = "models"):
+
+def main(prompt: str, n_tokens_to_generate: int = 50, K: int = 4, models_dir: str = "models"):
     from utils import load_encoder_hparams_and_params
 
-    # load encoder, hparams, and params from the released open-ai gpt-2 files
-    encoder, hparams, params = load_encoder_hparams_and_params(model_size, models_dir)
+    #加载草稿模型
+    encoder, hparams_draft, params_draft = load_encoder_hparams_and_params("355M", models_dir)
+
+    #加载专家模型
+    _, hparams_target, params_target = load_encoder_hparams_and_params("1558M", models_dir)
 
     # encode the input string using the BPE tokenizer
     input_ids = encoder.encode(prompt)
 
     # make sure we are not surpassing the max sequence length of our model
-    assert len(input_ids) + n_tokens_to_generate < hparams["n_ctx"]
+    assert len(input_ids) + n_tokens_to_generate < hparams_target["n_ctx"]
 
     # generate output ids
     start = time.time()
-    output_ids = generate(input_ids, params, hparams, n_tokens_to_generate)
+    output_ids = greedy_speculative_generate(
+        input_ids,
+        params_draft,
+        params_target,
+        hparams_draft,
+        hparams_target,
+        n_tokens_to_generate,
+        K
+    )
     end = time.time()
     print(f"Time taken to generate {n_tokens_to_generate} tokens: {end - start:.2f}s")
 
